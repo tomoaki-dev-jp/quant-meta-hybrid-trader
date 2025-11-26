@@ -21,3 +21,4 @@ yfinance
 ccxt
 pystan
 pymc
+python-dotenv

@@ -1,6 +1,8 @@
 services:
   python:
     build: ./python
+    env_file:
+      - .env
     image: bitcoin_quant:latest      # 独自イメージ名にしよ
     container_name: bitcoin_quant
     working_dir: /usr/src/app          # ここ基準にあわせる
