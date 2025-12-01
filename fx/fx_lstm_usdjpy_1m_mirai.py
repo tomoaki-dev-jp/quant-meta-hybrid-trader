@@ -248,7 +248,35 @@ def main():
     print("\n=== Future Forecast (next steps) ===")
     for i, p in enumerate(future, 1):
         print(f"+{i} : {p:.3f}")
+    # ---- 未来予測10本を時間軸に追加して描画 ----
+    future_steps = 10
+    future_preds = forecast_future(
+        model, feat_norm, target_mean, target_std, steps=future_steps
+    )
+
+    # 未来の時間軸を作る
+    last_time = idx[-1]
+    future_times = [last_time + pd.Timedelta(minutes=5 * i) for i in range(1, future_steps+1)]
+
+    plt.figure(figsize=(14,6))
+    # 既知データ
+    plt.plot(idx[-500:], df["close"].values[-500:], label="Actual")
+    plt.plot(test_idx[-500:], pred_test_denorm[-500:], label="Predicted")
+
+    # 未来予測部分
+    plt.plot(future_times, future_preds, label="Future Forecast", color="green")
+
+    plt.legend()
+    plt.grid()
+    plt.savefig("lstm_pred_with_future.png")
+    print("Saved: lstm_pred_with_future.png")
+
+
+
 
 
 if __name__ == "__main__":
     main()
+
+
+
