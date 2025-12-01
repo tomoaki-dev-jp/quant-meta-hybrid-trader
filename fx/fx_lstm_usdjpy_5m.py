@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 
 # ============ 設定 ============
 
-CSV_FILE     = "yf_USDJPYX_5m_max.csv"  # yfinanceで落とした1分足CSV
+CSV_FILE     = "fx/yf_USDJPYX_5m_max.csv"  # yfinanceで落とした1分足CSV
 USE_RESAMPLE = False                    # True にすると 5分足などに変換
 RESAMPLE_RULE = "5min"                  # "5min", "15min", "1H" など
 
