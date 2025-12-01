@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 CSV_FILE    = "yf_USDJPYX_1m_max.csv"  # あなたのCSVファイル名
 SEQ_LEN     = 60            # 過去何本で予測するか（1分足なら60=過去1時間分）
 TRAIN_RATIO = 0.8           # 学習データの割合
-EPOCHS      = 50            # エポック数（GPUならもっと増やしてもOK）
+EPOCHS      = 100            # エポック数（GPUならもっと増やしてもOK）
 BATCH_SIZE  = 128           # ミニバッチサイズ
 LR          = 1e-3          # 学習率
 MAX_POINTS  = 20000         # 過去から何本分だけ使うか（多すぎると重いので絞る）
