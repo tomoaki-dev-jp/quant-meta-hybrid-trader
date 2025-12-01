@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 
 # ============ 設定 ============
 
-CSV_FILE     = "yf_USDJPYX_5m_max.csv"   # ← 5分足版を指定
+CSV_FILE     = "fx/yf_USDJPYX_5m_max.csv"
 USE_RESAMPLE = False                    # Trueならリサンプリング可能
 RESAMPLE_RULE = "5min"
 
