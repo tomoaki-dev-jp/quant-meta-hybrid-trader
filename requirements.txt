@@ -33,6 +33,7 @@ ccxt>=4.3,<5.0            # 仮想通貨取引所API用
 # 入らなければ、最初はコメントアウトしておいて後で追加インストールでもOK。
 
 # ========= Infra / ユーティリティ =========
+pybitflyer
 python-dotenv>=1.0,<2.0   # .env 読み込み
 # optional (for text analysis / pretty plots)
 # wordcloud>=1.9,<2.0
