@@ -1,99 +1,119 @@
-# bf_ohlcv_history.py
-import os
 import time
 from datetime import datetime
-from dotenv import load_dotenv
-import ccxt
+import os
+
+import pybitflyer
 import pandas as pd
 
-
 # ======== 設定 =========
-SYMBOL = "BTC/JPY"
-TIMEFRAME = "1min"          # pandas resampleの単位
-LIMIT = 500                 # 1回の fetch_trades で取る件数（bitFlyerの上限に近い）
-MAX_TRADES = 50000          # 欲張り上限（ここを増やすともっと遡れる）
-SLEEP_SEC = 0.3             # レートリミット配慮用のスリープ
+PRODUCT_CODE = "BTC_JPY"     # bitFlyerのproduct_code[web:4]
+TIMEFRAME = "1min"
+LIMIT = 500                  # 1回の取得件数（count）[web:4]
+MAX_TRADES = 2000            # テスト用にちょい少なめ
+SLEEP_SEC = 0.3
 
 
-def main():
-    load_dotenv()
+def fetch_all_executions():
+    api = pybitflyer.API()   # 公開APIだけならキー不要[web:13]
 
-    exchange = ccxt.bitflyer({
-        "apiKey": os.getenv("API_KEY"),
-        "secret": os.getenv("API_SECRET"),
-        "enableRateLimit": True,
-    })
+    all_execs = []
+    before = None  # pagination用: idベース[web:4]
 
-    all_trades = []
-    since = None
-
-    print(f"Fetching trades for {SYMBOL} ...")
+    print(f"Fetching executions for {PRODUCT_CODE} ...")
 
     while True:
+        params = {
+            "product_code": PRODUCT_CODE,
+            "count": LIMIT,
+        }
+        if before is not None:
+            params["before"] = before  # このidより「前」を取る[web:4]
+
         try:
-            # ccxtのfetch_trades: sinceはミリ秒
-            trades = exchange.fetch_trades(SYMBOL, since=since, limit=LIMIT)
+            execs = api.executions(**params)  # GET /v1/executions[web:13][web:4]
         except Exception as e:
-            print("Error while fetching trades:", e)
+            print("Error while fetching executions:", e)
             print("Waiting a bit and retrying...")
             time.sleep(5)
             continue
 
-        if not trades:
-            print("No more trades returned. Stopping.")
+        if not execs:
+            print("No more executions returned. Stopping.")
             break
 
-        all_trades.extend(trades)
+        all_execs.extend(execs)
 
-        # 進捗表示
-        latest_dt = datetime.utcfromtimestamp(trades[-1]["timestamp"] / 1000)
+        latest = execs[-1]
+        # exec_date は ISO8601 文字列[web:4]
+        latest_dt = datetime.fromisoformat(
+            latest["exec_date"].replace("Z", "+00:00")
+        )
         print(
-            f"Got {len(trades)} trades "
-            f"(total: {len(all_trades)}), "
+            f"Got {len(execs)} executions "
+            f"(total: {len(all_execs)}), "
             f"last ts: {latest_dt} (UTC)"
         )
 
-        # 次のループ用にsinceを更新（最後のtimestampより1ms後）
-        since = trades[-1]["timestamp"] + 1
+        # 次のループ用にbeforeを更新（最後のidより小さいものを取る）
+        before = latest["id"]
 
-        # 上限に達したら終了
-        if len(all_trades) >= MAX_TRADES:
+        if len(all_execs) >= MAX_TRADES:
             print(f"Reached MAX_TRADES={MAX_TRADES}. Stopping fetch.")
             break
 
         time.sleep(SLEEP_SEC)
 
-    if not all_trades:
-        print("No trades fetched at all.")
-        return
+    return all_execs
 
-    # ======== DataFrame化 =========
+
+def build_ohlcv(execs):
     print("Building DataFrame...")
-    df = pd.DataFrame(all_trades)
+    df = pd.DataFrame(execs)
+    print("raw columns:", df.columns)
 
-    # timestamp → datetime
-    df["datetime"] = pd.to_datetime(df["timestamp"], unit="ms")
+    # exec_date を datetime に変換（フォーマット混在対応）[web:42]
+    df["datetime"] = pd.to_datetime(df["exec_date"], format="mixed", utc=True)
     df.set_index("datetime", inplace=True)
 
-    # ======== OHLCV生成（1分足） =========
-    print("Resampling to OHLCV 1min...")
+    print("index min/max:", df.index.min(), df.index.max())
 
+    print(f"Resampling to OHLCV {TIMEFRAME}...")
     ohlc = df["price"].resample(TIMEFRAME).ohlc()
-    vol = df["amount"].resample(TIMEFRAME).sum()
+    vol = df["size"].resample(TIMEFRAME).sum()
     ohlc["volume"] = vol
 
-    # 欠損行を削除
+    print("before dropna len:", len(ohlc))
     ohlc = ohlc.dropna()
+    print("after dropna len:", len(ohlc))
+
+    return ohlc
+
+
+def main():
+    print("=== main start ===")
+
+    execs = fetch_all_executions()
+    print("len(execs) =", len(execs))
+
+    if not execs:
+        print("No executions fetched at all. RETURN here.")
+        return
+
+    ohlc = build_ohlcv(execs)
+    print("after build_ohlcv, len(ohlc) =", len(ohlc))
 
     print("Tail of OHLCV:")
     print(ohlc.tail())
 
-    # ======== CSV保存 =========
-    out_file = "bitflyer_1m_ohlcv_history.csv"
+    out_file = "bitflyer_1m_ohlcv_history_pybitflyer.csv"
+    fullpath = os.path.abspath(out_file)
+    print("will save to:", fullpath)
+
     ohlc.to_csv(out_file)
     print(f"saved: {out_file}")
     print(f"total OHLCV rows: {len(ohlc)}")
 
 
 if __name__ == "__main__":
+    print("=== if __name__ == '__main__' ===")
     main()
