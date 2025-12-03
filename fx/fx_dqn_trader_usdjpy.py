@@ -249,3 +249,17 @@ def train_dqn():
     state = eval_env.reset()
     equity = 1.0
     eq_curve =_
+
+    print("fx_dqn_trader_usdjpy.py imported, __name__ =", __name__)
+
+def train_dqn():
+    print("train_dqn() start")  # デバッグ用
+    ...
+    print("train_dqn() end")    # デバッグ用
+
+
+if __name__ == "__main__":
+    print("main block start")
+    train_dqn()
+    print("main block end")
+
