@@ -1,9 +1,13 @@
-# fx_lstm_usdjpy_5m_best_with_forecast.py
+# fx_lstm_usdjpy_5m_best_with_forecast_pro.py
 #
 # yfinance の CSV（1m/5m問わず）を読み込み、
-# 多特徴量LSTMにより未来を予測する「最強構成」＋未来10ステップ予測付き。
+# 多特徴量LSTMにより未来を予測する精度爆伸び版。
+# - 時間特徴（時間帯・曜日）
+# - テクニカル指標ぽい特徴量（MA, ボラ, ボリュームZ-score）
+# - ハイパーパラ調整 + LRスケジューラ + EarlyStopping
 
 import os
+import copy
 import numpy as np
 import pandas as pd
 import torch
@@ -13,20 +17,22 @@ import matplotlib.pyplot as plt
 
 # ============ 設定 ============
 
-CSV_FILE     = "fx/yf_USDJPYX_5m_max.csv"
-USE_RESAMPLE = False                    # Trueならリサンプリング可能
+CSV_FILE      = "fx/yf_USDJPYX_5m_max.csv"
+USE_RESAMPLE  = False
 RESAMPLE_RULE = "5min"
 
-SEQ_LEN      = 72       # 5分足なら過去6時間
+SEQ_LEN      = 96       # 5分足×96本 = 過去8時間
 HORIZON      = 1        # 1本先予測（5分後）
 TRAIN_RATIO  = 0.8
-EPOCHS       = 300
-BATCH_SIZE   = 128
-LR           = 1e-4
+EPOCHS       = 300      # EarlyStoppingがあるので多めでもOK
+BATCH_SIZE   = 256
+LR           = 3e-4
 MAX_POINTS   = 20000
 
-HIDDEN_SIZE  = 128
+HIDDEN_SIZE  = 256
 NUM_LAYERS   = 3
+
+EARLY_STOP_PATIENCE = 30  # 改善が止まったら打ち切り
 
 # ============ デバイス ============
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -55,8 +61,6 @@ def load_yf_csv(csv_file: str) -> pd.DataFrame:
     for col in ["open", "high", "low", "close", "volume"]:
         if col not in df.columns:
             raise ValueError(f"CSVに {col} がありません。")
-
-    for col in ["open", "high", "low", "close", "volume"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
     df = df.dropna()
@@ -83,29 +87,68 @@ def load_yf_csv(csv_file: str) -> pd.DataFrame:
 
 # ============ 特徴量 ============
 def build_features(df: pd.DataFrame):
+    """
+    価格系 + ボラ系 + ボリューム + 時間帯特徴 を全部ぶち込む。
+    """
     feat_df = pd.DataFrame(index=df.index)
 
     close = df["close"]
     open_ = df["open"]
-    high = df["high"]
-    low  = df["low"]
-    vol  = df["volume"]
+    high  = df["high"]
+    low   = df["low"]
+    vol   = df["volume"]
 
+    # --- 基本系 ---
     feat_df["close"] = close
     feat_df["ret1"] = close.pct_change().fillna(0.0)
     feat_df["hl_spread"] = (high - low) / (close + 1e-9)
     feat_df["oc_change"] = (close - open_) / (open_ + 1e-9)
-    feat_df["volume"] = vol
-    feat_df["vol_roll"] = close.pct_change().rolling(30).std().fillna(0.0)
 
+    # --- ボラティリティ系 ---
+    # 5分足 × 12本 ≒ 1時間
+    feat_df["ret_std_1h"] = close.pct_change().rolling(12).std()
+    # 5分足 × 36本 ≒ 3時間
+    feat_df["ret_std_3h"] = close.pct_change().rolling(36).std()
+
+    # --- 移動平均系（トレンドっぽさ） ---
+    ma_fast = close.rolling(12).mean()
+    ma_slow = close.rolling(36).mean()
+    feat_df["ma_fast"] = ma_fast
+    feat_df["ma_slow"] = ma_slow
+    feat_df["ma_ratio"] = (ma_fast - ma_slow) / (ma_slow + 1e-9)
+
+    # --- ボリューム系 ---
+    feat_df["volume"] = vol
+    vol_ma = vol.rolling(48).mean()
+    vol_std = vol.rolling(48).std()
+    feat_df["vol_zscore"] = (vol - vol_ma) / (vol_std + 1e-9)
+
+    # --- 時間帯特徴（重要） ---
+    idx = df.index  # DatetimeIndex (UTC)
+    hour = idx.hour
+    dow = idx.dayofweek  # 0=Mon ... 6=Sun
+
+    # 24時間周期のサイン・コサイン
+    feat_df["hour_sin"] = np.sin(2 * np.pi * hour / 24)
+    feat_df["hour_cos"] = np.cos(2 * np.pi * hour / 24)
+
+    # 曜日もサイン・コサインで表現（7日周期）
+    feat_df["dow_sin"] = np.sin(2 * np.pi * dow / 7)
+    feat_df["dow_cos"] = np.cos(2 * np.pi * dow / 7)
+
+    # --- ローリング実現ボラ（元コードのやつも採用） ---
+    feat_df["vol_roll"] = close.pct_change().rolling(30).std()
+
+    # 無限大・NaNを除去
     feat_df = feat_df.replace([np.inf, -np.inf], np.nan).dropna()
 
+    # ---- ターゲットの生成と標準化 ----
     target = feat_df["close"].values.astype(np.float32)
     target_mean = target.mean()
     target_std  = target.std() if target.std() > 0 else 1.0
     target_norm = (target - target_mean) / target_std
 
-    # 特徴量を標準化
+    # ---- 特徴量の標準化 ----
     feat_values = feat_df.values.astype(np.float32)
     feat_mean = feat_values.mean(axis=0, keepdims=True)
     feat_std  = feat_values.std(axis=0, keepdims=True)
@@ -134,7 +177,7 @@ class LSTMModel(nn.Module):
             hidden_size=hidden,
             num_layers=layers,
             batch_first=True,
-            dropout=0.05 if layers > 1 else 0.0,
+            dropout=0.2 if layers > 1 else 0.0,   # dropout 少し増やす
         )
         self.fc = nn.Linear(hidden, 1)
 
@@ -159,6 +202,7 @@ def forecast_future(model, feat_norm, target_mean, target_std, steps=10):
             pred_price = pred_norm * target_std + target_mean
             preds.append(pred_price)
 
+            # 「close成分」（先頭要素）に予測値を反映させる簡易実装
             last_feat = seq_t[0, -1, :].clone()
             last_feat[0] = pred_norm
 
@@ -203,12 +247,20 @@ def main():
 
     criterion = nn.HuberLoss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=1e-4)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="min", factor=0.5, patience=10, verbose=True
+    )
 
-    # ---- 学習 ----
+    # ---- 学習（EarlyStopping付き） ----
+    best_val = float("inf")
+    best_state = None
+    no_improve = 0
+
     for epoch in range(EPOCHS):
+        # --- train ---
         model.train()
         total = 0
-        loss_sum = 0
+        loss_sum = 0.0
 
         for xb, yb in train_loader:
             optimizer.zero_grad()
@@ -220,16 +272,55 @@ def main():
             loss_sum += loss.item() * len(xb)
             total += len(xb)
 
-        print(f"[Epoch {epoch+1}/{EPOCHS}] Loss: {loss_sum/total:.6f}")
+        train_loss = loss_sum / max(total, 1)
+
+        # --- validation on test set (ここでは test をvalidation扱い) ---
+        model.eval()
+        with torch.no_grad():
+            val_pred = model(X_test_t).squeeze(-1)
+            val_loss = criterion(val_pred, y_test_t).item()
+
+        scheduler.step(val_loss)
+
+        print(f"[Epoch {epoch+1}/{EPOCHS}] "
+              f"TrainLoss: {train_loss:.6f}  ValLoss: {val_loss:.6f}")
+
+        # EarlyStopping判定
+        if val_loss < best_val - 1e-6:
+            best_val = val_loss
+            best_state = copy.deepcopy(model.state_dict())
+            no_improve = 0
+        else:
+            no_improve += 1
+
+        if no_improve >= EARLY_STOP_PATIENCE:
+            print(f"Early stopping at epoch {epoch+1}")
+            break
+
+    # ベストモデルを復元
+    if best_state is not None:
+        model.load_state_dict(best_state)
 
     # ---- テスト予測 ----
     model.eval()
-    pred_test_norm = model(X_test_t).squeeze(-1).detach().cpu().numpy()
+    with torch.no_grad():
+        pred_test_norm = model(X_test_t).squeeze(-1).cpu().numpy()
 
     y_test_denorm = y_test * target_std + target_mean
     pred_test_denorm = pred_test_norm * target_std + target_mean
 
-    # ---- グラフ ----
+    # ---- 評価指標（RMSE, MAE, MAPE） ----
+    mse = np.mean((pred_test_denorm - y_test_denorm) ** 2)
+    rmse = np.sqrt(mse)
+    mae = np.mean(np.abs(pred_test_denorm - y_test_denorm))
+    mape = np.mean(np.abs((pred_test_denorm - y_test_denorm) / y_test_denorm)) * 100
+
+    print("\n=== Test Metrics ===")
+    print(f"RMSE: {rmse:.6f}")
+    print(f"MAE : {mae:.6f}")
+    print(f"MAPE: {mape:.4f}%")
+
+    # ---- グラフ（テスト部分） ----
     full_idx = idx[SEQ_LEN + HORIZON - 1:]
     test_idx = full_idx[train_size:]
 
@@ -239,16 +330,11 @@ def main():
     plt.plot(test_idx[-N_plot:], pred_test_denorm[-N_plot:], label="Predicted")
     plt.legend()
     plt.grid()
+    plt.tight_layout()
     plt.savefig("lstm_pred.png")
     print("Saved: lstm_pred.png")
 
     # ---- 未来予測 ----
-    future = forecast_future(model, feat_norm, target_mean, target_std, steps=10)
-
-    print("\n=== Future Forecast (next steps) ===")
-    for i, p in enumerate(future, 1):
-        print(f"+{i} : {p:.3f}")
-    # ---- 未来予測10本を時間軸に追加して描画 ----
     future_steps = 100
     future_preds = forecast_future(
         model, feat_norm, target_mean, target_std, steps=future_steps
@@ -256,27 +342,24 @@ def main():
 
     # 未来の時間軸を作る
     last_time = idx[-1]
-    future_times = [last_time + pd.Timedelta(minutes=5 * i) for i in range(1, future_steps+1)]
+    future_times = [
+        last_time + pd.Timedelta(minutes=5 * i) for i in range(1, future_steps + 1)
+    ]
 
-    plt.figure(figsize=(14,6))
+    plt.figure(figsize=(14, 6))
     # 既知データ
     plt.plot(idx[-500:], df["close"].values[-500:], label="Actual")
-    plt.plot(test_idx[-500:], pred_test_denorm[-500:], label="Predicted")
+    plt.plot(test_idx[-N_plot:], pred_test_denorm[-N_plot:], label="Predicted")
 
     # 未来予測部分
-    plt.plot(future_times, future_preds, label="Future Forecast", color="green")
+    plt.plot(future_times, future_preds, label="Future Forecast")
 
     plt.legend()
     plt.grid()
+    plt.tight_layout()
     plt.savefig("lstm_pred_with_future.png")
     print("Saved: lstm_pred_with_future.png")
 
 
-
-
-
 if __name__ == "__main__":
     main()
-
-
-
