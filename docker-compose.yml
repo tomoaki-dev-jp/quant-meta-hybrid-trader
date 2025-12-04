@@ -9,8 +9,7 @@ services:
     working_dir: /usr/src/app
 
     # .env を環境変数として注入（API_KEY / API_SECRETとか）
-    env_file:
-      - .env
+
 
     # ホストのソースをコンテナにマウント
     volumes:
