@@ -5,4 +5,4 @@ venv-local/
 env/
 __pycache__/
 *.pyc
-trash
+trash/*
