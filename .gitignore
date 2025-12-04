@@ -8,3 +8,4 @@ __pycache__/
 trash/*
 *.csv
 *.png
+horse_racing/
