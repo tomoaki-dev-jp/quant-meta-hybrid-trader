@@ -27,7 +27,7 @@ from typing import List, Tuple, Dict
 # ================== 設定 ==================
 
 PAIR_CSV_LIST = [
-    "fx/yf_USDJPYX_5m_max.csv",
+    "yf_USDJPYX_5m_max.csv",
     # ここに他の通貨ペアのCSVを足してOK
     # "fx/yf_EURUSD_5m_max.csv",
     # "fx/yf_GBPUSD_5m_max.csv",
