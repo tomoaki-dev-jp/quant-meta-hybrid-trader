@@ -1,4 +1,4 @@
-Follow me on [X (Twitter)](https://x.com/new__nori_3)
+Follow me on [X (Twitter)](https://x.com/x_tomoaki_x)
 
 
 ## yf_ohlcv_history.py とは？
