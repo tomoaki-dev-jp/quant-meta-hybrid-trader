@@ -1,9 +1,6 @@
 # ================================================================================
-# quant_meta_hybrid_trader_v4.1_FIXED.py
-#
-# All-in-One Research Trading Framework v4.1 - Fully Fixed Version
-#
-# ★Fixed Improvements★
+# # All-in-One Research Trading Framework
+## ★Fixed Improvements★
 # 1. Complete Data Leakage Elimination (Real-time Feature Calculation)
 # 2. Full LoRA Implementation
 # 3. Regime CNN Restoration
